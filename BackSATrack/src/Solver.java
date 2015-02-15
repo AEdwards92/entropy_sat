@@ -263,7 +263,7 @@ public class Solver {
 	}
 	
 	public static void main(String[] args) {
-		String fileName = "src/Files/random_ksat.dimacs";
+		String fileName = "src/Files/Density/rho";
 		float movingAverage;
 		double stepArray[][] = new double[10][100];
 		double unifSteps[] = new double[100];
