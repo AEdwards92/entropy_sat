@@ -1,8 +1,14 @@
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.LinkedList;
 import java.util.Random;
+
 import org.math.plot.*;
+
 import javax.swing.*;
 
 public class Solver {
@@ -14,7 +20,7 @@ public class Solver {
 	 * clause assignments exponentially less likely as a
 	 * function of the number of other clauses they break.
 	 */
-	protected double breakCost;
+	protected double beta;
 	
 	/* A boolean that is set upon solver instantiation.
 	 * Indicates whether to use the above sampling method
@@ -29,17 +35,22 @@ public class Solver {
 	 */
 	protected List<Integer> assignment;
 	
+	/* A counter to keep track of how many clauses are currently
+	 * not satisfied.
+	 */
+	private int numUnsat;
+	
 	/* The various constructors for the solver
 	 */
 	
 	public Solver() {
-		breakCost = 1.0;
+		beta = 1.0;
 		balint = false;
 		assignment = new LinkedList<Integer>();
 	}
 	
 	public Solver(double cb) {
-		breakCost = cb;
+		beta = cb;
 		balint = true;
 		assignment = new LinkedList<Integer>();
 	}
@@ -53,22 +64,33 @@ public class Solver {
 
 	public Solver(double cb, ProblemInstance sat) {
 		inst = sat;
-		breakCost = cb;
+		beta = cb;
 		balint = true;
 		assignment = new LinkedList<Integer>();
 		initialize();
 	}
 
 	/* Initializer used by all constructors that pass
-	 * in an existing ProblemInstance.
+	 * in an existing ProblemInstance. Can also be used
+	 * to reset a solver
 	 */
 	
-	private void initialize() {
+	public void initialize() {
+		if (assignment == null) {
+			System.err.println("Error: attempting to initalize with null assignment list");
+			System.err.println("Terminating program");
+			System.exit(1);
+		}
+		assignment.clear();
+		
 		if (inst == null) {
 			System.err.println("Error: attempting to initalize with null instance");
 			System.err.println("Terminating program");
 			System.exit(1);
 		}
+		
+		inst.resetClauses();
+		
 		// add dummy item to use 1-based indexing
 		assignment.add(-1);
 		for (int i = 1; i <= inst.numVars; i++) {
@@ -76,6 +98,21 @@ public class Solver {
 				assignment.add(0);
 			} else {
 				assignment.add(1);
+			}
+		}
+		// Compute the number of unsatisfied clauses
+		numUnsat = 0;
+		for(int i = 0; i < inst.getNumClauses(); i++) {
+			Clause c = inst.getClause(i);
+			for (int v : c.getVars()) {
+				if ((v < 0 && assignment.get(-v) == 0)
+				 || (v > 0 && assignment.get(v) == 1)) {
+					c.sat = true;
+					break;
+				} 
+			}
+			if (!c.sat) {
+				numUnsat += 1;
 			}
 		}
 	}
@@ -158,8 +195,6 @@ public class Solver {
 			neighbor_loop:
 			for (int cid : neighbors) {
 				Clause d = inst.getClause(cid);
-//				if (!d.isSet())
-//					continue neighbor_loop;
 				for (int u : d.getVars()) {
 					if (u != -v && 
 						((u < 0 && assignment.get(-u) == 0)
@@ -174,7 +209,7 @@ public class Solver {
 			breakCnt[i] =        (1 & i) * varBreakCnt[0]
 						+ ((2 & i) >> 1) * varBreakCnt[1]
 						+ ((4 & i) >> 2) * varBreakCnt[2];
-			probs[i] = Math.pow(Math.E, -breakCost * breakCnt[i]);
+			probs[i] = Math.pow(Math.E, -beta * breakCnt[i]);
 			Z += probs[i];
 		}
 
@@ -206,20 +241,23 @@ public class Solver {
 		int choice;
 		int step;
 		Random randomGenerator = new Random();
-		for (step = 0; ; step++) {
+		for (step = 1; ; step++) {
 			unsetClauses = inst.getUnsetClauses();
 			numUnset = unsetClauses.size();
-			if (numUnset == 0) {
-//				System.err.println("Step: " + step);
+			if (numUnsat == 0) {
 				if (satisfied()) {
+					System.out.println("All satisifed! Number unset: " + numUnset);
 					break;
 				} else {
 					System.err.println("unsetClauses empty while problem not satisfied");
 				}
 			}
+			if (step % 50000 == 0) {
+				System.out.println("numUnset = " + numUnset);
+				System.out.println("numUnsat = " + numUnsat);
+			}
 			choice = randomGenerator.nextInt(numUnset);
 			Clause c = unsetClauses.get(choice);
-			boolean unsat;
 			// Sample V(c), make sure the resulting assignment
 			// satisfies c.
 			if (balint)
@@ -228,27 +266,37 @@ public class Solver {
 				unifSample(c);
 			
 			inst.setClause(c);
+			if (!c.sat) {
+				c.sat = true;
+				numUnsat--;
+			}
 			
-			// Check neighboring clauses of c which are set, and if they
-			// are unsatasified by current assignment, unset them
+			// Check neighboring clauses of c which are unsatisfied
+			// by current assignment, unset them if need be
 			for (int v : c.getVars()) {
 				List<Integer> neighborClauseIDs = inst.occurrenceMap.get(Math.abs(v));
 				for (int cid : neighborClauseIDs) {
 					Clause d = inst.getClause(cid);
-					if (d.isSet()) {
-						unsat = true;
-						for (int u : d.getVars()) {
-							if ((u > 0) && (assignment.get(u) == 1) ) {
-								unsat = false;
-								break;
-							} else if ((u < 0) && (assignment.get(-u) == 0)) {
-								unsat = false;
-								break;
-							}
+					boolean wasSat = d.sat;
+					d.sat = false;
+					for (int u : d.getVars()) {
+						if ((u > 0) && (assignment.get(u) == 1) ) {
+							d.sat = true;
+							break;
+						} else if ((u < 0) && (assignment.get(-u) == 0)) {
+							d.sat = true;
+							break;
 						}
-						if (unsat) {
+					}
+					if (!d.sat) {
+						if (wasSat) {
+							numUnsat++;
+						}
+						if (d.isSet()) {
 							inst.unsetClause(d);
 						}
+					} else if (!wasSat) {
+						numUnsat--;
 					}
 				}
 			}
@@ -262,43 +310,47 @@ public class Solver {
 		return solve();
 	}
 	
-	public static void main(String[] args) {
-		String fileName = "src/Files/Density/rho";
-		float movingAverage;
-		double stepArray[][] = new double[10][100];
-		double unifSteps[] = new double[100];
-		Plot2DPanel plot = new Plot2DPanel();
-		
-		for (int i = 0; i < 20; i++) {
-			movingAverage = 0;
-			System.out.println("Break penalty is " + (1.0 + (0.1 *i)));
-			for (int iteration = 0; iteration < 5; iteration++) {
-				ProblemInstance sat = DimacsParser.parseDimacsFile(fileName);
-				Solver sol = new Solver(1.0 + (0.1) * i, sat);
-				int steps = sol.solve();
-				movingAverage = (steps + iteration * movingAverage) / (iteration + 1);
-				stepArray[i][iteration] = steps;
-				//System.out.println("Steps: " + steps);
-			}
-			System.out.print("\tAverage for this round: " + movingAverage);
-			System.out.println();
-			System.out.println();
-			plot.addHistogramPlot("Balint Hist: C_B = " + (1.0 + (0.1 *i)), stepArray[i], 50);
-		}
-//		for (int iteration = 0; iteration < 1; iteration++) {
-//			System.out.println("Iteration 1");
-//			ProblemInstance sat = DimacsParser.parseDimacsFile(fileName);
-//			Solver sol = new Solver(sat);
-//			int steps = sol.solve();
-//			unifSteps[iteration] = steps;
-//			System.out.println("Steps: " + steps);
-//		}
-//		plot.addHistogramPlot("Uniform Hist", unifSteps, 50);
-        // put the PlotPanel in a JFrame like a JPanel
-        JFrame frame = new JFrame("a plot panel");
-        frame.setSize(600, 600);
-        frame.setContentPane(plot);
-        frame.setVisible(true);
+	public void setBeta(double b) {
+		beta = b;
 	}
 	
+	public static void main(String[] args) {
+		//		String[] suffixes = {"3_5", "4"};
+		float movingAverage;
+		String[] filenames = {"src/Files/krand/v10000c40000.cnf"};
+		try {
+			for (String name : filenames) {
+				PrintWriter writer = new PrintWriter(name + ".out", "UTF-8");
+				File child = new File(name);
+				System.out.println("Filename: " + name);
+				writer.println("Filename: " + name);
+				ProblemInstance sat = DimacsParser.parseDimacsFile(child.toString());
+				Solver sol = new Solver(1.75, sat);
+				movingAverage = 0;
+				writer.println("Break penalty is 1.75");
+				for (int iteration = 0; iteration < 10; iteration++) {
+					writer.print("\t\t");
+					System.out.println("it = " + iteration);
+					int steps = sol.solve();
+					movingAverage = (steps + iteration * movingAverage) / (iteration + 1);
+					writer.println("Iteration " + iteration + ": " + steps);
+					writer.flush();
+					sol.initialize();
+				}
+				System.out.println();
+				writer.println("Average: " + movingAverage);
+				writer.flush();
+				writer.close();
+			}
+		} catch (FileNotFoundException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		} catch (UnsupportedEncodingException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+
+	}
+
+
 }

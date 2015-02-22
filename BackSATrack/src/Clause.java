@@ -3,9 +3,11 @@ import java.util.List;
 public class Clause {
 	protected List<Integer> variables;
 	boolean status;
+	boolean sat;
 	public Clause(List<Integer> vars) {
 		variables = vars;
 		status = false;
+		sat = false;
 	}
 	
 	public List<Integer> getVars() {

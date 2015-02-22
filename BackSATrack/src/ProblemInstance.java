@@ -76,6 +76,16 @@ public class ProblemInstance {
 		unsetClauses.add(d);
 	}
 	
+	public void resetClauses() {
+		for (Clause c : clauseStore.values()) {
+			if (c.isSet()) {
+				c.unset();
+				c.sat = false;
+				unsetClauses.add(c);
+			}
+		}
+	}
+	
 	public int addClause(List<Integer> clause) {
 		maxClauseID++;
 		Clause c = new Clause(clause);
